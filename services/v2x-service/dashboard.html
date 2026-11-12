@@ -5,7 +5,7 @@
 <h1>V2X-SERVICE</h1>
 <p id="stats"></p>
 <h2>Alerts</h2>
-<table><thead><tr><th>Time</th><th>Type</th><th>Segment</th><th>Severity</th><th>Message</th></tr></thead>
+<table><thead><tr><th>Time</th><th>Type</th><th>Segment</th><th>Severity</th><th>Zona</th><th>SNS</th><th>Message</th></tr></thead>
 <tbody id="alerts"></tbody></table>
 <script>
 async function refresh() {
@@ -15,7 +15,8 @@ async function refresh() {
   const a = await (await fetch('/alerts')).json();
   document.getElementById('alerts').innerHTML = a.map(x =>
     `<tr><td>${x.created_time}</td><td>${x.alert_type}</td><td>${x.location.segment_id}</td>` +
-    `<td>${x.severity}</td><td>${x.message}</td></tr>`).join('');
+    `<td>${x.severity}</td><td>${x.zona ?? '—'}</td>` +
+    `<td>${x.published === undefined ? '—' : (x.published ? 'sent' : 'pending')}</td><td>${x.message}</td></tr>`).join('');
 }
 refresh(); setInterval(refresh, 2000);
 </script>
