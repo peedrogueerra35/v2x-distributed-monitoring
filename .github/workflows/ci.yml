@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  RSU_REPOSITORY: ${{ vars.ECR_REPOSITORY_RSU || 'v2x-rsu' }}
+
 jobs:
   tests:
     name: Tests
@@ -22,23 +25,25 @@ jobs:
         run: python -m pip install --upgrade pip
 
       - name: Install test dependencies
-        run: pip install pytest jsonschema -r simulator/requirements.txt
+        run: |
+          pip install pytest jsonschema -r simulator/requirements.txt
+          if [ -f services/rsu/requirements.txt ]; then pip install -r services/rsu/requirements.txt; fi
 
       - name: Run tests
         run: pytest
 
       - name: Build V2X-SERVICE Docker image
-        run: |
-          docker build \
-            -f services/v2x-service/Dockerfile \
-            -t v2x-service:ci \
-            .
-      
+        run: docker build -f services/v2x-service/Dockerfile -t v2x-service:ci .
+
+      - name: Build RSU Docker image
+        if: hashFiles('services/rsu/Dockerfile') != ''
+        run: docker build -f services/rsu/Dockerfile -t v2x-rsu:ci .
+
       # From here on, only main or Git tags publish to AWS
 
       - name: Configure AWS credentials
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -54,76 +59,99 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Tag Docker image with Git SHA
+      - name: Push V2X-SERVICE image (commit SHA)
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker tag v2x-service:ci \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag v2x-service:ci $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      - name: Push Docker image to ECR
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+      - name: Push RSU image (commit SHA)
+        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && hashFiles('services/rsu/Dockerfile') != ''
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker push \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag v2x-rsu:ci $ECR_REGISTRY/$RSU_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$RSU_REPOSITORY:$IMAGE_TAG
 
-      - name: Tag release image
+      - name: Tag release images
         if: startsWith(github.ref, 'refs/tags/')
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          docker tag v2x-service:ci \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$RELEASE_TAG
+          docker tag v2x-service:ci $ECR_REGISTRY/$ECR_REPOSITORY:$RELEASE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$RELEASE_TAG
+          if docker image inspect v2x-rsu:ci >/dev/null 2>&1; then
+            docker tag v2x-rsu:ci $ECR_REGISTRY/$RSU_REPOSITORY:$RELEASE_TAG
+            docker push $ECR_REGISTRY/$RSU_REPOSITORY:$RELEASE_TAG
+          fi
 
-          docker push \
-            $ECR_REGISTRY/$ECR_REPOSITORY:$RELEASE_TAG
+      - name: Upload deployment bundle to S3
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        env:
+          DEPLOY_BUCKET: ${{ vars.DEPLOY_BUCKET }}
+        run: |
+          PARTS="infra/deploy"
+          [ -d services/rsu/mosquitto ] && PARTS="$PARTS services/rsu/mosquitto"
+          tar czf bundle.tgz $PARTS
+          aws s3 cp bundle.tgz "s3://$DEPLOY_BUCKET/bundles/${{ github.sha }}.tgz"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            aws s3 cp bundle.tgz "s3://$DEPLOY_BUCKET/bundles/${{ github.ref_name }}.tgz"
+          fi
+
   deploy:
-    name: Deploy V2X-SERVICE to EC2
+    name: Deploy to EC2
     needs: tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
 
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Find the V2X-SERVICE instance
-        id: instance
-        run: |
-          IID=$(aws ec2 describe-instances \
-            --filters Name=tag:Role,Values=v2x-service Name=instance-state-name,Values=running \
-            --query 'Reservations[0].Instances[0].InstanceId' --output text)
-          if [ -z "$IID" ] || [ "$IID" = "None" ]; then
-            echo "No running v2x-service instance (lab session off or instance stopped)"; exit 1
-          fi
-          echo "id=$IID" >> "$GITHUB_OUTPUT"
-
-      - name: Run deploy.sh on the instance through SSM
+      - name: Run deploy.sh on every instance through SSM
         env:
-          IID: ${{ steps.instance.outputs.id }}
-          IMAGE_TAG: ${{ github.sha }}
+          SHA: ${{ github.sha }}
+          DEPLOY_BUCKET: ${{ vars.DEPLOY_BUCKET }}
         run: |
-          CMD=$(aws ssm send-command --document-name AWS-RunShellScript --instance-ids "$IID" \
-            --parameters "commands=[\"/opt/v2x/deploy.sh $IMAGE_TAG\"]" \
-            --query Command.CommandId --output text)
-          aws ssm wait command-executed --command-id "$CMD" --instance-id "$IID" || true
-          aws ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" \
-            --query StandardOutputContent --output text
-          STATUS=$(aws ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" \
-            --query Status --output text)
-          echo "SSM status: $STATUS"
-          test "$STATUS" = "Success"
+          # RSUs are deployed only if their image exists for this commit (services/rsu/ merged)
+          ROLES="v2x-service"
+          if aws ecr describe-images --repository-name "$RSU_REPOSITORY" --image-ids imageTag="$SHA" >/dev/null 2>&1; then
+            ROLES="v2x-service rsu-1 rsu-2"
+          else
+            echo "::notice::No $RSU_REPOSITORY:$SHA image yet, deploying V2X-SERVICE only"
+          fi
+          PARAMS=$(python3 -c 'import json, os; b, s = os.environ["DEPLOY_BUCKET"], os.environ["SHA"]; print(json.dumps({"commands": [
+            "set -e", "mkdir -p /opt/v2x/bundle", f"aws s3 cp s3://{b}/bundles/{s}.tgz /tmp/bundle.tgz",
+            "rm -rf /opt/v2x/bundle/*", "tar xzf /tmp/bundle.tgz -C /opt/v2x/bundle",
+            f"bash /opt/v2x/bundle/infra/deploy/deploy.sh {s}"]}))')
+          FAILED=0
+          for ROLE in $ROLES; do
+            IID=$(aws ec2 describe-instances \
+              --filters Name=tag:Role,Values=$ROLE Name=instance-state-name,Values=running \
+              --query 'Reservations[0].Instances[0].InstanceId' --output text)
+            if [ -z "$IID" ] || [ "$IID" = "None" ]; then
+              echo "::error::No running instance for $ROLE (lab session off or instance stopped)"; FAILED=1; continue
+            fi
+            echo "== $ROLE ($IID)"
+            CMD=$(aws ssm send-command --document-name AWS-RunShellScript --instance-ids "$IID" \
+              --parameters "$PARAMS" --query Command.CommandId --output text)
+            aws ssm wait command-executed --command-id "$CMD" --instance-id "$IID" || true
+            aws ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" \
+              --query '[StandardOutputContent,StandardErrorContent]' --output text
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" --query Status --output text)
+            echo "SSM status for $ROLE: $STATUS"
+            [ "$STATUS" = "Success" ] || FAILED=1
+          done
+          exit $FAILED
