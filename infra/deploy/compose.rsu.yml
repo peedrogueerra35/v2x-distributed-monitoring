@@ -1,0 +1,32 @@
+# RSU stack on each RSU instance: Mosquitto (MQTT endpoint of its vehicles) + RSU application.
+# Variables come from deploy.sh: REG, TAG, REGION, RSU_ID, MQTT_PASSWORD.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    ports: ["1883:1883"]
+    volumes:
+      - /opt/v2x/mosquitto:/mosquitto/config          # mosquitto.conf, acl and generated passwd
+      - mosquitto-data:/mosquitto/data                 # persistence of QoS 1 messages and sessions
+    restart: unless-stopped
+
+  rsu:
+    image: ${REG}/v2x-rsu:${TAG}
+    depends_on: [mosquitto]
+    ports: ["8090:8090"]                               # /health and /sns (SNS HTTP subscription)
+    environment:
+      RSU_ID: ${RSU_ID}
+      AWS_DEFAULT_REGION: ${REGION}
+      QUEUE_NAME: v2x-events
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_USER: rsu
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      HTTP_PORT: "8090"
+      DATA_DIR: /data
+    volumes:
+      - rsu-data:/data                                 # persistent buffer (outbox) towards SQS
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data: {}
+  rsu-data: {}

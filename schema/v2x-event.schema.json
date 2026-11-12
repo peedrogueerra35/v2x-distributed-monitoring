@@ -1,5 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "v2x-event/1.1",
+  "title": "V2X event",
   "type": "object",
   "required": ["event_id", "source_id", "event_type", "event_time", "location", "payload",
                "schema_version", "source_type", "seq"],
@@ -17,15 +19,40 @@
       }
     },
     "payload": {"type": "object"},
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"enum": ["1.0", "1.1"]},
     "source_type": {"enum": ["vehicle", "rsu", "emergency_vehicle"]},
     "seq": {"type": "integer", "minimum": 0},
     "sim_time_s": {"type": "number"},
-    "trace": {"type": "object"}
+    "trace": {
+      "type": "object",
+      "description": "Metadata added along the path; open so each stage can add its own fields",
+      "properties": {
+        "rsu_id": {"enum": ["rsu-1", "rsu-2"]},
+        "rsu_received_time": {"type": "string"},
+        "aggregated": {"type": "boolean"},
+        "aggregated_count": {"type": "integer", "minimum": 0},
+        "cloud_received_time": {"type": "string"}
+      }
+    }
   },
   "additionalProperties": false,
   "allOf": [
     {"if": {"properties": {"event_type": {"const": "brake"}}},
-     "then": {"properties": {"payload": {"required": ["decel_mps2", "speed_before_mps"]}}}}
+     "then": {"properties": {"payload": {"required": ["decel_mps2", "speed_before_mps"]}}}},
+    {"if": {"properties": {"event_type": {"const": "crash"}}},
+     "then": {"properties": {"payload": {"required": ["severity"]}}}},
+    {"if": {"properties": {"event_type": {"const": "hazard"}}},
+     "then": {"properties": {"payload": {"required": ["hazard_type", "severity"]}}}},
+    {"if": {"properties": {"event_type": {"const": "emergency"}}},
+     "then": {"properties": {"payload": {"required": ["vehicle_class", "route_segments", "eta_s"]}}}},
+    {"if": {"properties": {"event_type": {"const": "density"}}},
+     "then": {"properties": {"payload": {"required": ["vehicle_count", "mean_speed_mps", "window_s"]}}}},
+    {"if": {"properties": {"event_type": {"const": "collision_risk"}}},
+     "then": {"properties": {
+       "source_type": {"const": "rsu"},
+       "payload": {"required": ["pair", "ttc_s", "gap_m"],
+                   "properties": {"pair": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2},
+                                  "ttc_s": {"type": "number", "minimum": 0},
+                                  "gap_m": {"type": "number", "minimum": 0}}}}}}
   ]
 }
