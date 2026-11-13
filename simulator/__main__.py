@@ -35,7 +35,15 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--vehicles", type=int, help="override the scenario's vehicle count")
     p.add_argument("--duration", type=float, help="override the scenario's duration (s)")
-    p.add_argument("--transport", choices=["sqs", "stdout", "mqtt"], default="stdout")
+    p.add_argument("--transport", choices=["sqs", "stdout", "mqtt"], default="mqtt")
+    p.add_argument("--mqtt-rsu-1-host", default="localhost")
+    p.add_argument("--mqtt-rsu-1-port", type=int, default=1883)
+    p.add_argument("--mqtt-rsu-2-host", default="localhost")
+    p.add_argument("--mqtt-rsu-2-port", type=int, default=1884)
+    p.add_argument("--mqtt-user", default="sim")
+    p.add_argument("--mqtt-password", default=os.environ.get("MQTT_VEHICLE_PASSWORD", ""),
+                   help="prefer MQTT_VEHICLE_PASSWORD env var, not command-line arguments")
+    p.add_argument("--mqtt-alert-grace-s", type=float, default=2)
     p.add_argument("--queue", default="v2x-events")
     p.add_argument("--region", default="us-east-1")
     p.add_argument("--rate-scale", type=float, default=1.0, help="multiply every publish rate")
@@ -62,25 +70,35 @@ def main():
     with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump({"run_id": run_id, "seed": a.seed, "scenario": cfg, "faults": faults, "burst": a.burst,
                    "rate_scale": a.rate_scale, "time_scale": a.time_scale, "transport": a.transport,
-                   "queue": a.queue, "git_sha": _git_sha()}, f, indent=2)
+                   "queue": a.queue, "mqtt_endpoints": {
+                       "rsu-1": [a.mqtt_rsu_1_host, a.mqtt_rsu_1_port],
+                       "rsu-2": [a.mqtt_rsu_2_host, a.mqtt_rsu_2_port]} if a.transport == "mqtt" else None,
+                   "git_sha": _git_sha()}, f, indent=2)
 
     if a.transport == "sqs":
         transport = SqsTransport(a.queue, a.region)
     elif a.transport == "mqtt":
-        transport = MqttTransport()
+        transport = MqttTransport(
+            broker_hosts={"rsu-1": (a.mqtt_rsu_1_host, a.mqtt_rsu_1_port),
+                          "rsu-2": (a.mqtt_rsu_2_host, a.mqtt_rsu_2_port)},
+            username=a.mqtt_user, password=a.mqtt_password,
+            alerts_path=os.path.join(run_dir, "vehicle_alerts.jsonl"), grace_s=a.mqtt_alert_grace_s)
     else:
         transport = StdoutTransport()
 
     gt = JsonlLog(os.path.join(run_dir, "groundtruth.jsonl"))
     fl = JsonlLog(os.path.join(run_dir, "faults.jsonl"))
     sim = Simulator(cfg, transport, seed=a.seed, realtime=not a.fast, time_scale=a.time_scale,
-                    rate_scale=a.rate_scale, burst=a.burst, faults=faults, groundtruth=gt, fault_log=fl)
+                    rate_scale=a.rate_scale, burst=a.burst, faults=faults, groundtruth=gt, fault_log=fl,
+                    generate_density=(a.transport != "mqtt"))
     t0 = time.time()
     stats = sim.run()
     gt.close()
     fl.close()
     if isinstance(transport, SqsTransport):
         stats["sqs"] = transport.stats
+    if isinstance(transport, MqttTransport):
+        stats["mqtt"] = transport.stats
     stats["wall_s"] = round(time.time() - t0, 1)
     with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)

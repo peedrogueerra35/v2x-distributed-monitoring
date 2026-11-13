@@ -1,0 +1,9 @@
+# __RSU_ID__ is replaced during deployment/local broker startup.
+user sim
+topic write v2x/__RSU_ID__/+/+/+
+topic write v2x/__RSU_ID__/status/+
+topic read v2x/__RSU_ID__/alerts/#
+
+user rsu
+topic read v2x/__RSU_ID__/+/+/+
+topic write v2x/__RSU_ID__/alerts/#

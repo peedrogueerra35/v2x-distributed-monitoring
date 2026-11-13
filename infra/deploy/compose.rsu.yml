@@ -1,32 +1,33 @@
-# RSU stack on each RSU instance: Mosquitto (MQTT endpoint of its vehicles) + RSU application.
-# Variables come from deploy.sh: REG, TAG, REGION, RSU_ID, MQTT_PASSWORD.
+# Production stack for one AWS RSU instance, deployed by infra/deploy/deploy.sh.
+# The separate local Compose lives at services/rsu/compose.yml.
 services:
   mosquitto:
     image: eclipse-mosquitto:2.0.20
     ports: ["1883:1883"]
     volumes:
-      - /opt/v2x/mosquitto:/mosquitto/config          # mosquitto.conf, acl and generated passwd
-      - mosquitto-data:/mosquitto/data                 # persistence of QoS 1 messages and sessions
+      - /opt/v2x/mosquitto:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
     restart: unless-stopped
-
   rsu:
-    image: ${REG}/v2x-rsu:${TAG}
+    image: ${RSU_IMAGE:?RSU_IMAGE is required}
     depends_on: [mosquitto]
-    ports: ["8090:8090"]                               # /health and /sns (SNS HTTP subscription)
+    ports: ["8090:8090"]
     environment:
-      RSU_ID: ${RSU_ID}
-      AWS_DEFAULT_REGION: ${REGION}
-      QUEUE_NAME: v2x-events
-      MQTT_HOST: mosquitto
-      MQTT_PORT: "1883"
-      MQTT_USER: rsu
-      MQTT_PASSWORD: ${MQTT_PASSWORD}
-      HTTP_PORT: "8090"
+      RSU_ID: ${RSU_ID:?RSU_ID is required}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      SQS_QUEUE_NAME: ${SQS_QUEUE_NAME:-v2x-events}
+      SNS_TOPIC_ARN: ${SNS_TOPIC_ARN:?SNS_TOPIC_ARN required}
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: "1883"
+      MQTT_APP_USER: rsu
+      MQTT_APP_PASSWORD: ${MQTT_APP_PASSWORD:?MQTT_APP_PASSWORD required}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       DATA_DIR: /data
+      WINDOW_S: ${WINDOW_S:-5}
+      WINDOW_LATENESS_S: ${WINDOW_LATENESS_S:-2}
     volumes:
-      - rsu-data:/data                                 # persistent buffer (outbox) towards SQS
+      - rsu-data:/data
     restart: unless-stopped
-
 volumes:
   mosquitto-data: {}
   rsu-data: {}

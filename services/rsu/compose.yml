@@ -1,0 +1,46 @@
+# Local Compose. AWS deploy uses infra/deploy/compose.rsu.yml.
+# Copy .env.example to .env. The app image can be built locally OR pulled by RSU_IMAGE.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/templates/entrypoint.sh"]
+    restart: unless-stopped
+    environment:
+      RSU_ID: ${RSU_ID:?Set RSU_ID}
+      MQTT_VEHICLE_PASSWORD: ${MQTT_VEHICLE_PASSWORD:?Set MQTT_VEHICLE_PASSWORD}
+      MQTT_APP_PASSWORD: ${MQTT_APP_PASSWORD:?Set MQTT_APP_PASSWORD}
+    ports:
+      - "${MQTT_EXTERNAL_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto:/templates:ro
+      - mosquitto-config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+  rsu:
+    image: ${RSU_IMAGE:-v2x-rsu:local}
+    build:
+      context: ../..
+      dockerfile: services/rsu/Dockerfile
+    restart: unless-stopped
+    depends_on: [mosquitto]
+    environment:
+      RSU_ID: ${RSU_ID:?Set RSU_ID}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      SQS_QUEUE_NAME: ${SQS_QUEUE_NAME:-v2x-events}
+      SNS_TOPIC_ARN: ${SNS_TOPIC_ARN:-}
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: "1883"
+      MQTT_APP_USER: rsu
+      MQTT_APP_PASSWORD: ${MQTT_APP_PASSWORD:?Set MQTT_APP_PASSWORD}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      DATA_DIR: /data
+      WINDOW_S: ${WINDOW_S:-5}
+      WINDOW_LATENESS_S: ${WINDOW_LATENESS_S:-2}
+    ports:
+      - "${SNS_EXTERNAL_PORT:-8090}:8090"
+    volumes:
+      - rsu-data:/data
+volumes:
+  mosquitto-config: {}
+  mosquitto-data: {}
+  rsu-data: {}
