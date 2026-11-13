@@ -76,3 +76,13 @@ if stored == 0:
     print("\nAviso: 0 eventos guardados. Si repetiste la misma semilla sin vaciar las tablas,"
           " todos se descartaron como duplicados. Usa --seed $RANDOM.")
 EOF
+# Optional D2 edge metrics (keeps the original D1 AWS/DynamoDB behavior unchanged).
+# Example: RSU1_METRICS_URL=http://127.0.0.1:8090 RSU2_METRICS_URL=http://127.0.0.1:8091 \
+#          METRICS_TOKEN=... infra/scripts/run_metrics.sh runs/<run_id>
+if [[ -n "${RSU1_METRICS_URL:-}" || -n "${RSU2_METRICS_URL:-}" ]]; then
+  CMD=(python3 "$SCRIPT_DIR/edge_metrics.py" "$RUN_DIR")
+  [[ -n "${RSU1_METRICS_URL:-}" ]] && CMD+=(--rsu1 "$RSU1_METRICS_URL")
+  [[ -n "${RSU2_METRICS_URL:-}" ]] && CMD+=(--rsu2 "$RSU2_METRICS_URL")
+  [[ -n "${METRICS_TOKEN:-}" ]] && CMD+=(--token "$METRICS_TOKEN")
+  "${CMD[@]}"
+fi

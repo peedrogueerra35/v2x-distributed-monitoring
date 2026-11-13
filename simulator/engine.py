@@ -21,8 +21,9 @@ def iso(ts: float) -> str:
 class Simulator:
     def __init__(self, cfg: dict, transport, seed: int = 42, realtime: bool = True, time_scale: float = 1.0,
                  rate_scale: float = 1.0, burst=None, faults=None, groundtruth=None, fault_log=None,
-                 start_wall: float = None):
+                 start_wall: float = None, generate_density: bool = True):
         self.cfg = cfg
+        self.generate_density = generate_density
         self.transport = transport
         self.seed = seed
         self.realtime = realtime
@@ -76,7 +77,7 @@ class Simulator:
             "event_type": event_type, "event_time": iso(self._now()),
             "location": {"segment_id": self.road.segment_id(s), "rsu_id": self.road.rsu_id(s),
                          "lane": lane, "x": x, "y": y},
-            "payload": payload, "schema_version": "1.0", "sim_time_s": round(self.t, 2),
+            "payload": payload, "schema_version": "1.1", "sim_time_s": round(self.t, 2),
         }
         self.stats["generated"] += 1
         self.stats["by_type"][event_type] = self.stats["by_type"].get(event_type, 0) + 1
@@ -195,20 +196,22 @@ class Simulator:
             if self._periodic(veh.vid + ":position", "position"):
                 out.append(self._event(veh.vid, veh.source_type, "position", veh.s, veh.lane,
                                        {"speed_mps": round(veh.v, 2), "accel_mps2": round(veh.accel, 2),
-                                        "heading_deg": self.road.heading_deg(veh.s)}))
+                                        "heading_deg": self.road.heading_deg(veh.s),
+                                        "s_m": round(veh.s, 3), "length_m": veh.length}))
 
-        # RSU density reports: one per segment of the RSU's zone
-        for rsu, segs in (("rsu-1", range(0, N_SEGMENTS // 2)), ("rsu-2", range(N_SEGMENTS // 2, N_SEGMENTS))):
-            if self._periodic(rsu + ":density", "rsu_density"):
-                for idx in segs:
-                    s_mid = (idx + 0.5) * self.cfg["segment_length_m"]
-                    here = [v for v in self.vehicles if v.active and self.road.segment_index(v.s) == idx]
-                    occ = sum(v.length for v in here) / (self.cfg["segment_length_m"] * 2)
-                    out.append(self._event(rsu, "rsu", "density", s_mid, 0,
-                                           {"vehicle_count": len(here),
-                                            "mean_speed_mps": round(sum(v.v for v in here) / len(here), 2) if here else 0.0,
-                                            "occupancy": round(min(occ, 1.0), 3),
-                                            "window_s": round(1.0 / self._rate("rsu_density"), 1)}))
+        # D1 SQS backward compatibility only. In D2 MQTT, density is derived at the edge.
+        if self.generate_density:
+            for rsu, segs in (("rsu-1", range(0, N_SEGMENTS // 2)), ("rsu-2", range(N_SEGMENTS // 2, N_SEGMENTS))):
+                if self._periodic(rsu + ":density", "rsu_density"):
+                    for idx in segs:
+                        s_mid = (idx + 0.5) * self.cfg["segment_length_m"]
+                        here = [v for v in self.vehicles if v.active and self.road.segment_index(v.s) == idx]
+                        occ = sum(v.length for v in here) / (self.cfg["segment_length_m"] * 2)
+                        out.append(self._event(rsu, "rsu", "density", s_mid, 0,
+                                               {"vehicle_count": len(here),
+                                                "mean_speed_mps": round(sum(v.v for v in here) / len(here), 2) if here else 0.0,
+                                                "occupancy": round(min(occ, 1.0), 3),
+                                                "window_s": round(1.0 / self._rate("rsu_density"), 1)}))
         return out
 
     def run(self):

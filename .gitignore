@@ -45,3 +45,10 @@ runs/
 *.tfstate.*
 crash.log
 crash.*.log
+# RSU runtime/experiment artifacts
+services/rsu/.env
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+experiments/results/
+/docs/

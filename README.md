@@ -71,3 +71,16 @@ aws ssm send-command --document-name AWS-RunShellScript --targets Key=tag:Role,V
 
 Repository secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (Learner Lab session
 credentials, updated every session) and variables `AWS_REGION = us-east-1`, `ECR_REPOSITORY = v2x-service`.
+---
+
+## Deliverable 2 - Edge/RSU implementation (Persona B)
+
+This repository extends the original D1 SQS path with MQTT, **two RSU edge stacks**, event-time tumbling windows, local collision-risk alerts, durable SQLite outboxes, signed SNS alert reception and an E1 outage experiment. The original SQS transport is still available for D1 regression testing. `schema/v2x-event.schema.json`, `schema/v2x-alert.schema.json`, and `.github/workflows/ci.yml` remain the version contributed by Person A.
+
+- **Detailed Spanish guide and A/B coordination:** `docs/INFORME_D2_PERSONA_B_ACTUALIZADO.md` and `docs/CONTRATO_PERSONAS_A_B_D2.md`.
+- **Local RSU/Docker instructions:** `services/rsu/README.md`.
+- **Simulator MQTT instructions:** `simulator/README.md`.
+- **Reproducible local-only evidence:** `python infra/scripts/offline_evidence.py`.
+- **Combined tests:** `pip install pytest jsonschema -r simulator/requirements.txt -r services/rsu/requirements.txt && pytest -q`.
+
+The AWS deployment requires a successful merge to main plus a working AWS Academy session and SNS subscriptions. Offline tests alone do **not** prove actual AWS delivery.

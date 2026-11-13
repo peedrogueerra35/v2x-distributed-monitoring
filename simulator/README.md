@@ -44,3 +44,17 @@ drop and duplicate) and `summary.json` (event counts).
 `position` (1 Hz per vehicle), `brake` (deceleration of at least 4 m/s^2), `crash`, `hazard`, `emergency`
 (2 Hz from the emergency vehicle) and `density` (each RSU, every 5 s, one per segment of its zone).
 All of them validate against `schema/v2x-event.schema.json`.
+
+## Deliverable 2 - MQTT transport (Persona B)
+
+For D2 the default transport is now **MQTT**. Each vehicle connects to the broker of its current zone and reconnects when crossing `S05 -> S06` or `S11 -> S00`. The simulator subscribes to `alerts/<segment>` and `alerts/all`, records cloud/local alerts in `runs/<id>/vehicle_alerts.jsonl`, and stops inventing density events: those are produced in the RSUs' 5-second tumbling windows. Legacy `--transport sqs` and `--transport stdout` still generate D1 density events for regression.
+
+```bash
+export MQTT_VEHICLE_PASSWORD='(secret read from your local .env or SSM)'
+python -m simulator --transport mqtt --duration 120 \
+  --mqtt-rsu-1-host 127.0.0.1 --mqtt-rsu-1-port 1883 \
+  --mqtt-rsu-2-host 127.0.0.1 --mqtt-rsu-2-port 1884 \
+  --mqtt-user sim
+```
+
+In AWS set the actual Elastic IPs of each RSU, port 1883, and obtain the `sim` password securely from your teammate's SSM Parameter Store. Do not paste passwords into Git or shell history; use environment variables. **Do not use `--fast` for a real MQTT/AWS run**; windows are bounded by actual clock time.
