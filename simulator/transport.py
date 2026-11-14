@@ -118,6 +118,11 @@ class MqttTransport:
 
         def on_disconnect(c, userdata, flags, reason_code, properties):
             ready.clear()
+            if not current.get("closing"):
+                with self.alert_lock:
+                    self.stats["unexpected_disconnects"] = self.stats.get("unexpected_disconnects", 0) + 1
+                print(f"[mqtt] {vehicle_id} lost its connection to {rsu}: {reason_code}; "
+                      "paho reconnects automatically", file=sys.stderr, flush=True)
 
         def on_message(c, userdata, msg):
             try:
@@ -171,6 +176,8 @@ class MqttTransport:
                 conn = self.connections.get(vid)
                 if conn is None or conn["rsu"] != rsu:
                     if conn:
+                        conn["closing"] = True
+                        conn["client"].unsubscribe(f"v2x/{conn['rsu']}/alerts/{conn['segment']}")
                         conn["client"].disconnect()
                         conn["client"].loop_stop()
                     conn = self._connect(vid, rsu, segment)
@@ -180,13 +187,20 @@ class MqttTransport:
                     conn["ready"].clear()
                     conn["client"].subscribe(f"v2x/{rsu}/alerts/{segment}", qos=1)
                     if not conn["ready"].wait(self.connect_timeout):
-                        raise TimeoutError(f"alert subscription for {vid} on {segment} timed out")
+                        self.stats["subscribe_timeouts"] = self.stats.get("subscribe_timeouts", 0) + 1
                 topic = mqtt_event_topic(ev)
                 qos = 0 if ev["event_type"] == "position" else 1
-                info = conn["client"].publish(topic, json.dumps(ev, separators=(',', ':')), qos=qos)
+                body = json.dumps(ev, separators=(',', ':'))
+                info = conn["client"].publish(topic, body, qos=qos)
+                if info.rc == self.mqtt.MQTT_ERR_NO_CONN:
+                    # Connection dropped (e.g. Internet hiccup): paho reconnects by itself
+                    # (reconnect_delay_set 1-10 s); wait for it and retry once.
+                    if conn["ready"].wait(self.connect_timeout):
+                        info = conn["client"].publish(topic, body, qos=qos)
                 if info.rc != self.mqtt.MQTT_ERR_SUCCESS:
                     self.stats["publish_failures"] += 1
-                    raise ConnectionError(f"MQTT publish failed: {info.rc} for {topic}")
+                    self.stats["not_connected"] = self.stats.get("not_connected", 0) + 1
+                    continue
                 info.wait_for_publish(timeout=5)
                 if not info.is_published():
                     # QoS 0 is best effort; a QoS 1 message stays in paho's queue and is
@@ -201,6 +215,7 @@ class MqttTransport:
         if self.grace_s > 0:
             time.sleep(self.grace_s)
         for conn in self.connections.values():
+            conn["closing"] = True
             conn["client"].disconnect()
             conn["client"].loop_stop()
         if self.alert_file:
