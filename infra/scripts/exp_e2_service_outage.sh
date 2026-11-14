@@ -29,25 +29,38 @@ echo "E2: outage ${OUTAGE}s at t=${STOP_AT}s, seed ${SEED}, simulator ${SIM_ARGS
 echo "time,visible,in_flight" > "$OUT/queue.csv"
 ( while true; do read -r v f < <(depth "$QUEUE_URL"); echo "$(now),$v,$f" >> "$OUT/queue.csv"; sleep 5; done ) &
 SAMPLER=$!
-trap 'kill $SAMPLER 2>/dev/null || true' EXIT
+SIM=""; STOPPED=0
+cleanup() {
+  kill "$SAMPLER" 2>/dev/null || true
+  if [ -n "$SIM" ] && kill -0 "$SIM" 2>/dev/null; then kill "$SIM" 2>/dev/null || true; echo "  simulator stopped"; fi
+  if [ "$STOPPED" = "1" ]; then
+    echo "  interrupted during the outage: restarting v2x-service"; ssm_run "docker start v2x-service"
+  fi
+}
+trap cleanup EXIT
+trap 'echo; echo "  interrupted"; exit 130' INT TERM
 
 # shellcheck disable=SC2086
 python -m simulator --scenario simulator/scenarios/accident.yaml --seed "$SEED" $SIM_ARGS > "$OUT/simulator.log" 2>&1 &
 SIM=$!
 
+echo "  simulator running; stopping v2x-service in ${STOP_AT}s"
 sleep "$STOP_AT"
-T_STOP=$(now); ssm_run "docker stop v2x-service"; echo "  stopped  $T_STOP"
+T_STOP=$(now); STOPPED=1; ssm_run "docker stop v2x-service"; echo "  stopped   $T_STOP  (outage of ${OUTAGE}s, the queue grows meanwhile)"
 sleep "$OUTAGE"
-T_START=$(now); ssm_run "docker start v2x-service"; echo "  restarted $T_START"
+T_START=$(now); ssm_run "docker start v2x-service"; STOPPED=0; echo "  restarted $T_START"
 START_EPOCH=$(date +%s)
 
+echo "  waiting for the simulator to finish (5 min scenario in total)"
 wait "$SIM" || echo "  simulator exited with an error (see simulator.log)"
+SIM=""
 echo "  simulator finished; waiting for the queue to drain"
 T_DRAINED=""; zeros=0
 for _ in $(seq 1 120); do
   read -r v f < <(depth "$QUEUE_URL")
   if [ "$v" = "0" ] && [ "$f" = "0" ]; then zeros=$((zeros+1)); else zeros=0; fi
   if [ $zeros -ge 2 ]; then T_DRAINED=$(now); break; fi
+  echo "    queue: $v visible, $f in flight"
   sleep 5
 done
 kill $SAMPLER 2>/dev/null || true
