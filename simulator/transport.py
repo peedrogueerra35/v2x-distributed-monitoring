@@ -89,7 +89,8 @@ class MqttTransport:
         self.connect_timeout = connect_timeout
         self.grace_s = grace_s
         self.connections = {}
-        self.lock = threading.RLock()
+        self.lock = threading.RLock()          # protects self.connections (main thread)
+        self.alert_lock = threading.Lock()     # protects stats/alert file from paho network threads
         self.alert_file = open(alerts_path, 'w', encoding='utf-8') if alerts_path else None
         self.stats = {"published": 0, "publish_failures": 0, "alerts_received": 0, "by_rsu": {}}
 
@@ -132,7 +133,9 @@ class MqttTransport:
                           "alert_id": alert.get("alert_id"), "origin": alert.get("origin"),
                           "alert_type": alert.get("alert_type"), "segment_id": current["segment"],
                           "latency_ms": round((now-created).total_seconds()*1000, 2)}
-                with self.lock:
+                # Never take self.lock here: send() holds it while waiting for this same
+                # client's network thread to flush a publish, which would deadlock.
+                with self.alert_lock:
                     self.stats["alerts_received"] += 1
                     if self.alert_file:
                         self.alert_file.write(json.dumps(record, separators=(',', ':'))+'\n')
@@ -186,8 +189,11 @@ class MqttTransport:
                     raise ConnectionError(f"MQTT publish failed: {info.rc} for {topic}")
                 info.wait_for_publish(timeout=5)
                 if not info.is_published():
+                    # QoS 0 is best effort; a QoS 1 message stays in paho's queue and is
+                    # retried on reconnect. Count it instead of aborting the whole run.
                     self.stats["publish_failures"] += 1
-                    raise TimeoutError(f"MQTT publish not confirmed: {topic}")
+                    self.stats["unconfirmed_qos%d" % qos] = self.stats.get("unconfirmed_qos%d" % qos, 0) + 1
+                    continue
                 self.stats["published"] += 1
                 self.stats["by_rsu"][rsu] = self.stats["by_rsu"].get(rsu, 0) + 1
 
