@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import rules
+from live import LiveView
 
 REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 TOPIC_ARN = os.getenv("ALERTS_TOPIC_ARN")          # unset -> alerts are stored but not published (D1 behaviour)
@@ -22,6 +23,7 @@ ser, des = TypeSerializer(), TypeDeserializer()
 stats = {"received": 0, "stored": 0, "duplicate": 0, "invalid": 0, "alerts": 0,
          "alerts_published": 0, "publish_errors": 0}
 state = {"last_poll": time.time()}
+live = LiveView()   # in-memory state of the road for the dashboard
 
 def item(d): return {k: ser.serialize(v) for k, v in d.items()}
 def now_iso(): return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -83,6 +85,7 @@ def process(ev):
             return
         raise
     stats["stored"] += 1
+    live.update(ev)
     for alert in rules.evaluate(ev):
         raise_alert(alert)
 
@@ -142,6 +145,10 @@ def alerts():
 def report():
     depth = sqs.get_queue_attributes(QueueUrl=QUEUE_URL, AttributeNames=["ApproximateNumberOfMessages"])
     return {**stats, "queue_depth": int(depth["Attributes"]["ApproximateNumberOfMessages"])}
+
+@app.get("/live")
+def live_view():
+    return JSONResponse(json.loads(json.dumps(live.snapshot(), default=plain)))
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
