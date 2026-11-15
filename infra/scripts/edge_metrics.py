@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persona B: summarize a simulator run and live/offline RSU counters.
+"""Summarize a simulator run and live/offline RSU counters.
 
 No AWS credentials necessary. Per-vehicle alerts contain the observed latency.
 """
