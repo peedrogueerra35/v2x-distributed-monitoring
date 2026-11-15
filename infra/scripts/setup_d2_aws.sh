@@ -3,7 +3,7 @@
 # Usage (from the repository root, with the lab session credentials):
 #   infra/scripts/setup_d2_aws.sh <team-ip-1> [<team-ip-2> ...]
 # Creates: SNS topic v2x-alerts, ECR repository v2x-rsu, S3 bucket for deployment bundles,
-#          MQTT passwords in SSM Parameter Store, security group v2x-rsu-sg,
+#          MQTT passwords and the RSU metrics token in SSM Parameter Store, security group v2x-rsu-sg,
 #          two RSU instances (rsu-1, rsu-2), each with an Elastic IP.
 set -euo pipefail
 [ $# -ge 1 ] || { echo "usage: $0 <team-ip> [<team-ip> ...]"; exit 1; }
@@ -25,12 +25,16 @@ aws ecr put-lifecycle-policy --repository-name v2x-rsu --lifecycle-policy-text \
 echo "== S3 bucket for deployment bundles: $BUCKET"
 aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || aws s3 mb "s3://$BUCKET" >/dev/null
 
-echo "== MQTT passwords in SSM Parameter Store"
+echo "== MQTT passwords and metrics token in SSM Parameter Store"
 for user in sim rsu; do
   name="/v2x/mqtt/$user-password"
   aws ssm get-parameter --name "$name" >/dev/null 2>&1 || \
     aws ssm put-parameter --name "$name" --type SecureString --value "$(openssl rand -hex 12)" >/dev/null
 done
+# Token for the RSU /metrics and /audit endpoints (port 8090 is open to the internet for SNS).
+# deploy.sh reads it on every deployment; without it those endpoints answer 403 to everyone.
+aws ssm get-parameter --name /v2x/metrics/token >/dev/null 2>&1 || \
+  aws ssm put-parameter --name /v2x/metrics/token --type SecureString --value "$(openssl rand -hex 16)" >/dev/null
 
 echo "== Security group v2x-rsu-sg"
 RSG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=v2x-rsu-sg \
@@ -79,5 +83,6 @@ Done.
   Deployment bucket .... $BUCKET   -> GitHub variable DEPLOY_BUCKET
   RSU image repository . v2x-rsu   -> GitHub variable ECR_REPOSITORY_RSU
   MQTT 'sim' password .. aws ssm get-parameter --name /v2x/mqtt/sim-password --with-decryption --query Parameter.Value --output text
+  Metrics token ........ aws ssm get-parameter --name /v2x/metrics/token --with-decryption --query Parameter.Value --output text
 Next: infra/scripts/migrate_service_d2.sh, then merge to main so the pipeline deploys the three instances.
 SUMMARY
