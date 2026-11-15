@@ -59,7 +59,7 @@ main { padding: 18px 24px 28px; display: grid; gap: 16px; max-width: 1680px; mar
 .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
 .legend svg { vertical-align: -3px; margin-right: 5px; }
 .alerts { overflow-y: auto; max-height: 668px; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
-.alert { display: grid; grid-template-columns: 4px 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.alert { flex: none; display: grid; grid-template-columns: 4px 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .alert .bar { background: var(--neutral); } .alert.s1 .bar { background: var(--mid); }
 .alert.s2 .bar { background: #ea580c; } .alert.s3 .bar { background: var(--bad); }
 .alert .body { padding: 8px 10px; min-width: 0; }
