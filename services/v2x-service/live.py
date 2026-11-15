@@ -3,6 +3,7 @@
 The cloud does not receive every vehicle position (the RSUs aggregate them into per-segment `density`
 summaries every 5 s), so the live view shows exactly what the cloud knows:
   - per segment: vehicles, mean speed and occupancy from the latest RSU summary;
+  - one entry per vehicle with its latest position, taken from the `vehicles` list of those summaries;
   - exact positions of critical events (brake, crash, hazard) and of emergency vehicles;
   - RSU activity and recent throughput.
 Pure Python, no AWS calls, thread-safe; unit-tested without the service.
@@ -15,6 +16,7 @@ from datetime import datetime
 SEGMENTS = [f"S{i:02d}" for i in range(12)]
 MARKER_TTL_S = 120          # incidents stay on the map for 2 minutes
 EMERGENCY_TTL_S = 10        # an emergency vehicle disappears 10 s after its last report
+VEHICLE_TTL_S = 20          # a vehicle disappears 20 s after the last summary that included it
 BUCKET_S = 5                # throughput histogram resolution
 BUCKETS = 60                # 60 x 5 s = last 5 minutes
 MARKER_TYPES = {"brake", "crash", "hazard", "collision_risk"}
@@ -34,6 +36,7 @@ class LiveView:
         self.lock = threading.Lock()
         self.segments = {}          # segment -> latest density summary
         self.emergency = {}         # source_id -> latest emergency report
+        self.vehicles = {}          # vehicle id -> latest known position (one entry per vehicle)
         self.markers = deque(maxlen=200)
         self.recent = deque(maxlen=40)
         self.rsus = {}              # rsu_id -> {"last": epoch, "events": n}
@@ -60,6 +63,17 @@ class LiveView:
                     "mean_speed_mps": _num(p.get("mean_speed_mps")),
                     "occupancy": _num(p.get("occupancy")),
                     "window_end": p.get("window_end", ev["event_time"]), "updated": now}
+                # A vehicle can appear in two summaries of the same window (it crossed a segment
+                # boundary); keep only its most recent position so it is drawn exactly once.
+                for v in p.get("vehicles", []):
+                    t = _epoch(v["time"])
+                    known = self.vehicles.get(v["id"])
+                    if known is None or t >= known["t"]:
+                        s_m = float(v["s_m"])
+                        self.vehicles[v["id"]] = {
+                            "id": v["id"], "s_m": s_m, "lane": int(v.get("lane", 0)),
+                            "speed_mps": _num(v.get("speed_mps")), "t": t, "time": v["time"],
+                            "segment_id": f"S{int(s_m // 100) % 12:02d}", "rsu_id": rsu, "updated": now}
             elif etype == "emergency":
                 self.emergency[ev["source_id"]] = {
                     "source_id": ev["source_id"], "segment_id": seg, "rsu_id": rsu,
@@ -87,12 +101,14 @@ class LiveView:
                                  "vehicle_count": None, "age_s": None})
             emergency = [dict(e, age_s=round(now - e["updated"], 1)) for e in self.emergency.values()
                          if now - e["updated"] <= EMERGENCY_TTL_S]
+            vehicles = sorted((dict(v, age_s=round(now - v["updated"], 1)) for v in self.vehicles.values()
+                               if now - v["updated"] <= VEHICLE_TTL_S), key=lambda v: v["id"])
             markers = [dict(m, age_s=round(now - m["updated"], 1)) for m in self.markers
                        if now - m["updated"] <= MARKER_TTL_S]
             rsus = {k: {"events": v["events"], "last_event_age_s": round(now - v["last"], 1)}
                     for k, v in self.rsus.items()}
             b_now = int(now // BUCKET_S * BUCKET_S)
             throughput = [self.buckets.get(b_now - BUCKET_S * i, 0) for i in range(BUCKETS - 1, -1, -1)]
-            return {"server_time": now, "segments": segments, "emergency": emergency, "markers": markers,
+            return {"server_time": now, "segments": segments, "vehicles": vehicles, "emergency": emergency, "markers": markers,
                     "rsus": rsus, "recent": list(self.recent), "throughput": throughput,
                     "bucket_s": BUCKET_S}

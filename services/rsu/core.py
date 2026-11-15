@@ -194,8 +194,13 @@ class EdgeStore:
         row = self.db.execute("SELECT * FROM windows WHERE segment_id=? AND window_start=?",
                               (seg, start)).fetchone()
         veh_map = json.loads(row["vehicles_json"]) if row else {}
-        veh_map[ev["source_id"]] = 1
         speed = float(ev["payload"]["speed_mps"])
+        prev = veh_map.get(ev["source_id"])
+        if not isinstance(prev, dict) or prev.get("t", 0) <= event_epoch:
+            # latest sample of each vehicle in this window: lets the cloud draw one dot per vehicle
+            veh_map[ev["source_id"]] = {"s_m": round(float(ev["payload"]["s_m"]), 1),
+                                        "lane": int(ev["location"].get("lane", 0)),
+                                        "speed_mps": round(speed, 2), "t": event_epoch}
         if row:
             self.db.execute("UPDATE windows SET sample_count=sample_count+1, speed_sum=speed_sum+?, "
                             "vehicles_json=? WHERE segment_id=? AND window_start=?",
@@ -281,8 +286,12 @@ class EdgeStore:
             rows = list(self.db.execute(f"SELECT * FROM windows {where} ORDER BY window_start,segment_id", args))
             for row in rows:
                 start, seg = row["window_start"], row["segment_id"]
-                distinct = len(json.loads(row["vehicles_json"]))
+                veh_map = json.loads(row["vehicles_json"])
+                distinct = len(veh_map)
                 mean = row["speed_sum"] / row["sample_count"]
+                vehicles = [{"id": vid, "s_m": v["s_m"], "lane": v["lane"], "speed_mps": v["speed_mps"],
+                             "time": iso(v["t"])}
+                            for vid, v in sorted(veh_map.items()) if isinstance(v, dict)]
                 ev = {
                     "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"density:{self.rsu_id}:{seg}:{start}:{self.window_s}")),
                     "source_id": self.rsu_id, "source_type": "rsu", "event_type": "density",
@@ -293,7 +302,8 @@ class EdgeStore:
                                 "mean_speed_mps": round(mean, 3),
                                 "occupancy": round(min(1.0, distinct * CAR_LENGTH_M / (SEGMENT_LENGTH_M * LANES)), 3),
                                 "window_s": self.window_s,
-                                "window_start": iso(start), "window_end": iso(start + self.window_s)},
+                                "window_start": iso(start), "window_end": iso(start + self.window_s),
+                                "vehicles": vehicles},
                     "trace": {"rsu_received_time": iso(now), "aggregated": True,
                               "aggregated_count": row["sample_count"], "rsu_id": self.rsu_id},
                 }
