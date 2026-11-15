@@ -137,7 +137,7 @@ tr:last-child td { border-bottom: none; }
         <span><i style="background:var(--mid)"></i>Moderado</span>
         <span><i style="background:var(--slow)"></i>Lento (&lt; 29 km/h)</span>
         <span><i style="background:var(--nodata)"></i>Sin datos</span>
-        <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="var(--z1)"/></svg>Vehículo (posición estimada desde la última que envió su RSU)</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="var(--z1)"/></svg>Vehículo (última posición enviada por su RSU)</span>
         <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="var(--amb)"/></svg>Ambulancia (posición exacta)</span>
         <span><svg width="14" height="14" viewBox="0 0 14 14"><path d="M1 2H13L7 12Z" fill="var(--mid)"/></svg>Frenada</span>
         <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--bad)" stroke-width="1.8"/><path d="M4.5 4.5L9.5 9.5M9.5 4.5L4.5 9.5" stroke="var(--bad)" stroke-width="1.8"/></svg>Accidente</span>
@@ -155,7 +155,7 @@ tr:last-child td { border-bottom: none; }
     <div class="card">
       <div class="card-h"><h2>Segmentos</h2><span>Último resumen de cada RSU</span></div>
       <div class="card-b"><table>
-        <thead><tr><th>Seg.</th><th>RSU</th><th title="Vehículos cuya posición estimada está en este segmento">Vehículos</th><th>Velocidad</th><th>Ocupación</th><th>Hace</th></tr></thead>
+        <thead><tr><th>Seg.</th><th>RSU</th><th title="Vehículos cuya última posición recibida está en este segmento">Vehículos</th><th>Velocidad</th><th>Ocupación</th><th>Hace</th></tr></thead>
         <tbody id="segtable"></tbody>
       </table></div>
     </div>
@@ -235,25 +235,19 @@ function buildRing() {
   el("line", { x1: CX - 80, y1: CY, x2: CX + 80, y2: CY, stroke: "var(--line-strong)", "stroke-width": 1 }, layers.center);
 }
 
-// One dot per vehicle. The RSU reports each vehicle's latest position in its 5 s window summary,
-// so when it reaches the dashboard it is 2-7 s old. The dashboard estimates where the vehicle is NOW
-// (dead reckoning: reported position + speed x time since then, at most MAX_EXTRAP_S) and glides the
-// dot there on every 1 s poll. A stopped vehicle (speed 0) stays where it was reported.
+// One dot per vehicle, drawn exactly at the LAST position its RSU reported (s_m along the 1,200 m
+// ring). No estimation and no animation: when a newer position arrives, the dot jumps to it.
 const cars = {};
-const MAX_EXTRAP_S = 8, GLIDE_MS = 1000;
 const ringDeg = s_m => (s_m / 1200) * 360;
-function estimate(v, serverNow) {
-  const age = Math.min(MAX_EXTRAP_S, Math.max(0, serverNow - Date.parse(v.time) / 1000));
-  const s = ((v.s_m + (v.speed_mps || 0) * age) % 1200 + 1200) % 1200;
-  const segment = `S${String(Math.floor(s / 100) % 12).padStart(2, "0")}`;
-  return Object.assign({}, v, { est_s_m: s, est_segment: segment, est_rsu: Math.floor(s / 100) < 6 ? "rsu-1" : "rsu-2",
+function withZone(v, serverNow) {
+  const seg = Math.floor(v.s_m / 100) % 12;
+  return Object.assign({}, v, { pos_segment: `S${String(seg).padStart(2, "0")}`, pos_rsu: seg < 6 ? "rsu-1" : "rsu-2",
                                  report_age_s: Math.max(0, serverNow - Date.parse(v.time) / 1000) });
 }
 function drawCars(vehicles) {
-  const now = performance.now(), seen = new Set();
+  const seen = new Set();
   vehicles.forEach(v => {
     seen.add(v.id);
-    const target = ringDeg(v.est_s_m), r = LANE[v.lane === 1 ? 1 : 0];
     let c = cars[v.id];
     if (!c) {
       const g = el("g", { class: "car" }, layers.cars);
@@ -262,33 +256,17 @@ function drawCars(vehicles) {
         "font-weight": 600, fill: "#fff", class: "mono" }, g);
       label.textContent = String(parseInt(v.id.split("-")[1], 10));
       el("title", {}, g);
-      c = cars[v.id] = { g, dot, label, from: target, to: target, t0: now, r };
-    } else {
-      let delta = target - (c.to % 360 + 360) % 360;
-      if (delta < -180) delta += 360;
-      if (delta > 180) delta -= 360;
-      c.from = currentDeg(c, now); c.to = c.to + delta; c.t0 = now;
+      c = cars[v.id] = { g, dot, label };
     }
-    c.r = r;
-    c.g.style.opacity = v.age_s > 12 ? .35 : 1;
-    c.g.querySelector("title").textContent =
-      `${v.id} · ${v.est_segment} (estimado) · carril ${v.lane} · ${v.speed_mps != null ? Math.round(v.speed_mps * 3.6) + " km/h" : "–"} · posición enviada por ${v.rsu_id} hace ${ago(v.report_age_s)}`;
-  });
-  Object.keys(cars).forEach(id => { if (!seen.has(id)) { cars[id].g.remove(); delete cars[id]; } });
-}
-function currentDeg(c, now) {
-  const k = Math.min(1, (now - c.t0) / GLIDE_MS);
-  return c.from + (c.to - c.from) * k;
-}
-function animateCars() {
-  const now = performance.now();
-  Object.values(cars).forEach(c => {
-    const deg = currentDeg(c, now), [x, y] = pt(c.r, deg);
-    c.dot.setAttribute("fill", ((deg % 360) + 360) % 360 < 180 ? "var(--z1)" : "var(--z2)");
+    const [x, y] = pt(LANE[v.lane === 1 ? 1 : 0], ringDeg(v.s_m));
     c.dot.setAttribute("cx", x); c.dot.setAttribute("cy", y);
     c.label.setAttribute("x", x); c.label.setAttribute("y", y);
+    c.dot.setAttribute("fill", v.pos_rsu === "rsu-1" ? "var(--z1)" : "var(--z2)");
+    c.g.style.opacity = v.age_s > 12 ? .35 : 1;
+    c.g.querySelector("title").textContent =
+      `${v.id} · ${v.pos_segment} · carril ${v.lane} · ${v.speed_mps != null ? Math.round(v.speed_mps * 3.6) + " km/h" : "–"} · posición enviada por ${v.rsu_id} hace ${ago(v.report_age_s)}`;
   });
-  requestAnimationFrame(animateCars);
+  Object.keys(cars).forEach(id => { if (!seen.has(id)) { cars[id].g.remove(); delete cars[id]; } });
 }
 
 function placeOnRing(m) {
@@ -342,7 +320,7 @@ function drawSegments(segments, rsus, vehicles) {
       `${s.segment_id} · ${s.vehicle_count} vehículos · ${s.mean_speed_mps != null ? Math.round(s.mean_speed_mps * 3.6) + " km/h" : "–"} · hace ${ago(s.age_s)}`;
   });
   [["z1", "rsu-1"], ["z2", "rsu-2"]].forEach(([k, rsu]) => {
-    const inZone = vehicles.filter(x => x.est_rsu === rsu);
+    const inZone = vehicles.filter(x => x.pos_rsu === rsu);
     const n = inZone.length, withSpeed = inZone.filter(x => x.speed_mps != null);
     const v = withSpeed.length ? withSpeed.reduce((a, x) => a + x.speed_mps, 0) / withSpeed.length : null;
     document.getElementById(`zone-${k}-count`).textContent = n;
@@ -357,7 +335,7 @@ function drawSegments(segments, rsus, vehicles) {
 
 function drawTable(segments, vehicles) {
   const per = {};
-  vehicles.forEach(v => { per[v.est_segment] = (per[v.est_segment] || 0) + 1; });
+  vehicles.forEach(v => { per[v.pos_segment] = (per[v.pos_segment] || 0) + 1; });
   document.getElementById("segtable").innerHTML = segments.map(s => {
     const has = s.vehicle_count != null, kmh = has && s.mean_speed_mps != null ? Math.round(s.mean_speed_mps * 3.6) : null;
     const occ = has && s.occupancy != null ? Math.round(s.occupancy * 100) : null;
@@ -423,7 +401,7 @@ async function getJSON(url) { const r = await fetch(url, { cache: "no-store" });
 async function tickLive() {
   try {
     const d = await getJSON("live");
-    const vehicles = (d.vehicles || []).filter(v => !v.id.startsWith("ev-")).map(v => estimate(v, d.server_time));
+    const vehicles = (d.vehicles || []).filter(v => !v.id.startsWith("ev-")).map(v => withZone(v, d.server_time));
     drawSegments(d.segments, d.rsus, vehicles); drawCars(vehicles); drawMarkers(d.markers); drawEmergency(d.emergency);
     drawTable(d.segments, vehicles); drawChart(d.throughput, d.bucket_s); drawLog(d.recent);
     document.getElementById("t-clock").textContent = new Date().toLocaleTimeString("es-ES");
@@ -450,7 +428,6 @@ async function tickReport() {
 async function tickAlerts() { try { drawAlerts(await getJSON("alerts")); } catch (e) {} }
 
 buildRing();
-requestAnimationFrame(animateCars);
 tickLive(); tickReport(); tickAlerts();
 setInterval(tickLive, 1000); setInterval(tickReport, 2000); setInterval(tickAlerts, 2000);
 </script>
