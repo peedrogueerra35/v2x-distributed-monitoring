@@ -1,23 +1,421 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>V2X-SERVICE</title>
-<style>body{font-family:sans-serif;margin:24px}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:4px 8px}</style>
-</head><body>
-<h1>V2X-SERVICE</h1>
-<p id="stats"></p>
-<h2>Alerts</h2>
-<table><thead><tr><th>Time</th><th>Type</th><th>Segment</th><th>Severity</th><th>Zona</th><th>SNS</th><th>Message</th></tr></thead>
-<tbody id="alerts"></tbody></table>
-<script>
-async function refresh() {
-  const r = await (await fetch('/report')).json();
-  document.getElementById('stats').textContent =
-    Object.entries(r).map(([k, v]) => k + ': ' + v).join(' | ');
-  const a = await (await fetch('/alerts')).json();
-  document.getElementById('alerts').innerHTML = a.map(x =>
-    `<tr><td>${x.created_time}</td><td>${x.alert_type}</td><td>${x.location.segment_id}</td>` +
-    `<td>${x.severity}</td><td>${x.zona ?? '—'}</td>` +
-    `<td>${x.published === undefined ? '—' : (x.published ? 'sent' : 'pending')}</td><td>${x.message}</td></tr>`).join('');
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V2X · Centro de control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --line: #e3e5e9; --line-strong: #c9cdd4;
+  --ink: #16191f; --ink-2: #4b5260; --ink-3: #7d8494;
+  --z1: #0f766e; --z1-soft: #ccebe7; --z2: #4338ca; --z2-soft: #dcdaf7;
+  --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --neutral: #9aa1ad;
+  --fast: #16a34a; --mid: #d97706; --slow: #dc2626; --nodata: #e6e8ec;
+  --amb: #e11d48; --shadow: 0 1px 2px rgba(16, 24, 40, .06);
 }
-refresh(); setInterval(refresh, 2000);
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --panel: #171b21; --line: #262c35; --line-strong: #39414d;
+    --ink: #e9ecf1; --ink-2: #b4bbc7; --ink-3: #808998;
+    --z1: #2dd4bf; --z1-soft: #134e4a; --z2: #818cf8; --z2-soft: #312e81;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --neutral: #6b7380;
+    --fast: #22c55e; --mid: #f59e0b; --slow: #ef4444; --nodata: #232a33;
+    --amb: #fb7185; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font-family: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif; font-size: 14px; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .2px; }
+.brand p { margin: 2px 0 0; color: var(--ink-3); font-size: 12.5px; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border: 1px solid var(--line);
+  border-radius: 999px; font-size: 12.5px; color: var(--ink-2); background: var(--panel); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--neutral); flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+main { padding: 18px 24px 28px; display: grid; gap: 16px; max-width: 1680px; margin: 0 auto; }
+.kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow); }
+.kpi .label { color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+.kpi .value { font-size: 24px; font-weight: 500; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.kpi .value.bad { color: var(--bad); } .kpi .sub { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.grid-main { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 16px; }
+.grid-bottom { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; min-width: 0; }
+.card-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); }
+.card-h h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.card-h span { color: var(--ink-3); font-size: 12px; }
+.card-b { padding: 12px 16px; min-width: 0; }
+#ring { width: 100%; height: auto; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 0 16px 14px; color: var(--ink-2); font-size: 12px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
+.legend svg { vertical-align: -3px; margin-right: 5px; }
+.alerts { overflow-y: auto; max-height: 668px; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.alert { display: grid; grid-template-columns: 4px 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.alert .bar { background: var(--neutral); } .alert.s1 .bar { background: var(--mid); }
+.alert.s2 .bar { background: #ea580c; } .alert.s3 .bar { background: var(--bad); }
+.alert .body { padding: 8px 10px; min-width: 0; }
+.alert .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.alert .type { font-weight: 600; font-size: 13.5px; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-2); }
+.badge.z1 { background: var(--z1-soft); color: var(--z1); border-color: transparent; }
+.badge.z2 { background: var(--z2-soft); color: var(--z2); border-color: transparent; }
+.badge.zb { background: transparent; color: var(--amb); border-color: var(--amb); }
+.badge.pending { color: var(--warn); border-color: var(--warn); }
+.alert .msg { color: var(--ink-2); font-size: 12.5px; margin-top: 3px; overflow-wrap: anywhere; }
+.alert .meta { color: var(--ink-3); font-size: 11.5px; margin-top: 3px; }
+.empty { color: var(--ink-3); font-size: 13px; padding: 18px 4px; text-align: center; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th { text-align: left; font-weight: 500; color: var(--ink-3); font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px;
+  padding: 6px; border-bottom: 1px solid var(--line); }
+td { padding: 6px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+.occ { width: 70px; height: 6px; background: var(--nodata); border-radius: 3px; overflow: hidden; }
+.occ > div { height: 100%; background: var(--ink-3); }
+.spd { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+#chart { width: 100%; height: 170px; display: block; }
+.log { font-size: 12px; line-height: 1.65; max-height: 268px; overflow-y: auto; }
+.log div { display: grid; grid-template-columns: 70px minmax(0, 1fr) 104px; gap: 8px; white-space: nowrap; }
+.log .t { color: var(--ink-3); } .log .src { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+.seg-node { transition: fill .6s, fill-opacity .6s; }
+.car { transition: transform 1.1s cubic-bezier(.4, 0, .2, 1), opacity .4s; }
+@keyframes pulse { 0% { opacity: .6; transform: scale(1); } 100% { opacity: 0; transform: scale(2.6); } }
+@media (prefers-reduced-motion: no-preference) {
+  .pulse { animation: pulse 1.4s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+}
+.badge { white-space: nowrap; }
+@media (max-width: 640px) {
+  header, main { padding-left: 12px; padding-right: 12px; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  th:nth-child(5), td:nth-child(5) { display: none; }
+}
+@media (max-width: 1200px) {
+  .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .grid-main, .grid-bottom { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>V2X · Centro de control</h1>
+    <p>Monitorización distribuida de la carretera · AWS us-east-1</p>
+  </div>
+  <div class="pills">
+    <span class="pill"><span class="dot" id="p-consumer"></span><span id="t-consumer">Consumidor</span></span>
+    <span class="pill"><span class="dot" id="p-sns"></span><span id="t-sns">SNS</span></span>
+    <span class="pill"><span class="dot" id="p-queue"></span><span id="t-queue">Cola SQS</span></span>
+    <span class="pill mono" id="t-clock">--:--:--</span>
+  </div>
+</header>
+
+<main>
+  <section class="kpis" aria-label="Contadores del servicio">
+    <div class="kpi"><div class="label">Recibidos</div><div class="value" id="k-received">–</div><div class="sub">mensajes de SQS</div></div>
+    <div class="kpi"><div class="label">Guardados</div><div class="value" id="k-stored">–</div><div class="sub" id="k-rate">– eventos/s</div></div>
+    <div class="kpi"><div class="label">Duplicados</div><div class="value" id="k-duplicate">–</div><div class="sub">descartados por event_id</div></div>
+    <div class="kpi"><div class="label">Inválidos</div><div class="value" id="k-invalid">–</div><div class="sub">no cumplen el esquema</div></div>
+    <div class="kpi"><div class="label">Alertas</div><div class="value" id="k-alerts">–</div><div class="sub">generadas en la nube</div></div>
+    <div class="kpi"><div class="label">Publicadas SNS</div><div class="value" id="k-published">–</div><div class="sub" id="k-puberr">– errores</div></div>
+    <div class="kpi"><div class="label">Cola SQS</div><div class="value" id="k-queue">–</div><div class="sub">mensajes pendientes</div></div>
+  </section>
+
+  <section class="grid-main">
+    <div class="card">
+      <div class="card-h"><h2>Circuito en tiempo real</h2><span>Anillo de 1,2 km · 12 segmentos · 2 carriles</span></div>
+      <svg id="ring" viewBox="0 0 640 600" role="img" aria-label="Mapa del circuito con las zonas de las RSU, los vehículos por segmento, la ambulancia y los incidentes"></svg>
+      <div class="legend">
+        <span><i style="background:var(--fast)"></i>Fluido (≥ 72 km/h)</span>
+        <span><i style="background:var(--mid)"></i>Moderado</span>
+        <span><i style="background:var(--slow)"></i>Lento (&lt; 29 km/h)</span>
+        <span><i style="background:var(--nodata)"></i>Sin datos</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="var(--z1)"/></svg>Detección en la última ventana de 5 s de su RSU</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="var(--amb)"/></svg>Ambulancia (posición exacta)</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><path d="M1 2H13L7 12Z" fill="var(--mid)"/></svg>Frenada</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--bad)" stroke-width="1.8"/><path d="M4.5 4.5L9.5 9.5M9.5 4.5L4.5 9.5" stroke="var(--bad)" stroke-width="1.8"/></svg>Accidente</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 1L13 7L7 13L1 7Z" fill="#eab308"/></svg>Peligro</span>
+        <span><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--bad)" stroke-width="1.6" stroke-dasharray="2.5 2"/></svg>Riesgo de colisión</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Alertas</h2><span id="alerts-count">–</span></div>
+      <div class="alerts" id="alerts"><div class="empty">Sin alertas todavía</div></div>
+    </div>
+  </section>
+
+  <section class="grid-bottom">
+    <div class="card">
+      <div class="card-h"><h2>Segmentos</h2><span>Último resumen de cada RSU</span></div>
+      <div class="card-b"><table>
+        <thead><tr><th>Seg.</th><th>RSU</th><th title="Vehículos distintos vistos en el segmento durante la ventana de 5 s">Detectados</th><th>Velocidad</th><th>Ocupación</th><th>Hace</th></tr></thead>
+        <tbody id="segtable"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Actividad</h2><span>Eventos guardados cada 5 s · últimos 5 min</span></div>
+      <div class="card-b"><svg id="chart" viewBox="0 0 400 170" preserveAspectRatio="none" role="img" aria-label="Eventos guardados por intervalo de 5 segundos"></svg></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Eventos recientes</h2><span>Los 40 últimos guardados</span></div>
+      <div class="card-b"><div class="log mono" id="log"></div></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const CX = 320, CY = 300, R_IN = 168, R_OUT = 232, LANE = [184, 216];
+const TYPE_ES = { sudden_braking: "Frenada brusca", crash: "Accidente", emergency_priority: "Vehículo de emergencia",
+  collision_risk: "Riesgo de colisión", road_hazard: "Peligro en la vía", congestion: "Congestión" };
+const EVENT_ES = { position: "posición", brake: "frenada", crash: "accidente", hazard: "peligro",
+  density: "densidad", emergency: "emergencia", collision_risk: "riesgo colisión" };
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (parent) parent.appendChild(e); return e; };
+const pt = (r, deg) => [CX + r * Math.cos(deg * Math.PI / 180), CY - r * Math.sin(deg * Math.PI / 180)];
+const fmt = n => n == null ? "–" : Number(n).toLocaleString("es-ES");
+const ago = s => s == null ? "–" : s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min`;
+const segIndex = s => parseInt(s.slice(1), 10);
+const speedColor = v => v == null ? "var(--nodata)" : v >= 20 ? "var(--fast)" : v >= 8 ? "var(--mid)" : "var(--slow)";
+const angleOfXY = (x, y) => { let a = Math.atan2(y, x) * 180 / Math.PI; return a < 0 ? a + 360 : a; };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const svg = document.getElementById("ring");
+const layers = {};
+function buildRing() {
+  ["zones", "segs", "lanes", "labels", "rsus", "cars", "markers", "amb", "center"].forEach(n => layers[n] = el("g", {}, svg));
+  [[0, 180, "var(--z1-soft)"], [180, 360, "var(--z2-soft)"]].forEach(([a0, a1, c]) => {
+    const ro = R_OUT + 14, ri = R_IN - 14;
+    const [x0, y0] = pt(ro, a0), [x1, y1] = pt(ro, a1), [x2, y2] = pt(ri, a1), [x3, y3] = pt(ri, a0);
+    el("path", { d: `M${x0} ${y0}A${ro} ${ro} 0 0 0 ${x1} ${y1}L${x2} ${y2}A${ri} ${ri} 0 0 1 ${x3} ${y3}Z`, fill: c, opacity: .55 }, layers.zones);
+  });
+  for (let i = 0; i < 12; i++) {
+    const a0 = i * 30 + .6, a1 = (i + 1) * 30 - .6;
+    const [x0, y0] = pt(R_OUT, a0), [x1, y1] = pt(R_OUT, a1), [x2, y2] = pt(R_IN, a1), [x3, y3] = pt(R_IN, a0);
+    const p = el("path", { d: `M${x0} ${y0}A${R_OUT} ${R_OUT} 0 0 0 ${x1} ${y1}L${x2} ${y2}A${R_IN} ${R_IN} 0 0 1 ${x3} ${y3}Z`,
+      class: "seg-node", fill: "var(--nodata)", "fill-opacity": .55, stroke: "var(--panel)", "stroke-width": 1.5 }, layers.segs);
+    p.id = `seg-${i}`;
+    const name = `S${String(i).padStart(2, "0")}`;
+    el("title", {}, p).textContent = name;
+    const [lx, ly] = pt(R_OUT + 26, i * 30 + 15);
+    el("text", { x: lx, y: ly, "text-anchor": "middle", "dominant-baseline": "central", "font-size": 12,
+      fill: "var(--ink-2)", class: "mono" }, layers.labels).textContent = name;
+  }
+  el("circle", { cx: CX, cy: CY, r: (R_IN + R_OUT) / 2, fill: "none", stroke: "var(--panel)", "stroke-width": 1.2,
+    "stroke-dasharray": "5 6", opacity: .9 }, layers.lanes);
+  [0, 180].forEach(deg => {
+    const [ax, ay] = pt(R_IN - 18, deg), [bx, by] = pt(R_OUT + 18, deg);
+    el("line", { x1: ax, y1: ay, x2: bx, y2: by, stroke: "var(--ink-3)", "stroke-width": 1.2, "stroke-dasharray": "2 3" }, layers.lanes);
+  });
+  [["rsu-1", 90, "var(--z1)"], ["rsu-2", 270, "var(--z2)"]].forEach(([id, deg, c]) => {
+    const [sx, sy] = pt(R_OUT + 2, deg), [ex, ey] = pt(R_OUT + 37, deg);
+    el("line", { x1: sx, y1: sy, x2: ex, y2: ey, stroke: c, "stroke-width": 1.5 }, layers.rsus);
+    const [x, y] = pt(R_OUT + 52, deg);
+    const g = el("g", { id: `node-${id}` }, layers.rsus);
+    el("title", {}, g).textContent = id;
+    el("rect", { x: x - 46, y: y - 15, width: 92, height: 30, rx: 7, fill: "var(--panel)", stroke: c, "stroke-width": 1.5 }, g);
+    el("circle", { cx: x - 30, cy: y, r: 4.5, fill: "var(--neutral)", class: "rsu-dot" }, g);
+    el("text", { x: x + 6, y, "text-anchor": "middle", "dominant-baseline": "central", "font-size": 13,
+      "font-weight": 600, fill: c }, g).textContent = id;
+  });
+  [["z1", 236, "Zona rsu-1", "S00 – S05"], ["z2", 364, "Zona rsu-2", "S06 – S11"]].forEach(([k, y, title, sub]) => {
+    const c = layers.center;
+    el("text", { x: CX, y: y - 30, "text-anchor": "middle", "font-size": 13, "font-weight": 600, fill: `var(--${k})` }, c).textContent = title;
+    el("text", { x: CX, y: y - 12, "text-anchor": "middle", "font-size": 11.5, fill: "var(--ink-3)", class: "mono" }, c).textContent = sub;
+    el("text", { x: CX, y: y + 18, "text-anchor": "middle", "font-size": 30, "font-weight": 500, fill: "var(--ink)", id: `zone-${k}-count` }, c).textContent = "–";
+    el("text", { x: CX, y: y + 38, "text-anchor": "middle", "font-size": 11.5, fill: "var(--ink-3)", id: `zone-${k}-sub` }, c).textContent = "sin datos recientes";
+  });
+  el("line", { x1: CX - 80, y1: CY, x2: CX + 80, y2: CY, stroke: "var(--line-strong)", "stroke-width": 1 }, layers.center);
+}
+
+const cars = {};
+function drawCars(segments) {
+  const wanted = new Set();
+  segments.forEach(s => {
+    const i = segIndex(s.segment_id), n = s.vehicle_count || 0, stale = s.age_s != null && s.age_s > 30;
+    for (let k = 0; k < n; k++) {
+      const key = `${s.segment_id}-${k}`; wanted.add(key);
+      const [x, y] = pt(LANE[k % 2], i * 30 + 30 * (k + 1) / (n + 1));
+      let g = cars[key];
+      if (!g) {
+        g = el("g", { class: "car" }, layers.cars);
+        el("circle", { r: 6.5, fill: s.rsu_id === "rsu-1" ? "var(--z1)" : "var(--z2)", stroke: "var(--panel)", "stroke-width": 1.8 }, g);
+        g.style.transform = `translate(${x}px, ${y}px)`; g.style.opacity = 0;
+        cars[key] = g;
+      }
+      g.style.transform = `translate(${x}px, ${y}px)`;
+      requestAnimationFrame(() => { g.style.opacity = stale ? .35 : 1; });
+    }
+  });
+  Object.keys(cars).forEach(k => { if (!wanted.has(k)) { cars[k].remove(); delete cars[k]; } });
+}
+
+function placeOnRing(m) {
+  if (m.x != null && m.y != null) return pt(m.lane === 1 ? LANE[1] : LANE[0], angleOfXY(m.x, m.y));
+  return pt((R_IN + R_OUT) / 2, segIndex(m.segment_id) * 30 + 15);
+}
+
+function drawMarkers(markers) {
+  const g = layers.markers; g.innerHTML = "";
+  markers.slice().reverse().forEach(m => {
+    const [x, y] = placeOnRing(m), mg = el("g", { opacity: Math.max(.35, 1 - m.age_s / 120) }, g);
+    const tip = { brake: `Frenada de ${m.detail ?? "?"} m/s² · ${m.source_id}`, crash: `Accidente · ${m.source_id}`,
+      hazard: `Peligro (${m.detail ?? "?"}) · ${m.source_id}`,
+      collision_risk: `Riesgo de colisión · TTC ${m.detail ?? "?"} s · ${(m.pair || []).join(" → ")}` }[m.type];
+    el("title", {}, mg).textContent = `${tip} · ${m.segment_id} · hace ${ago(m.age_s)}`;
+    if (m.type === "crash") {
+      el("circle", { cx: x, cy: y, r: 11, fill: "var(--panel)", stroke: "var(--bad)", "stroke-width": 2 }, mg);
+      el("path", { d: `M${x - 5} ${y - 5}L${x + 5} ${y + 5}M${x + 5} ${y - 5}L${x - 5} ${y + 5}`, stroke: "var(--bad)", "stroke-width": 2.4, "stroke-linecap": "round" }, mg);
+    } else if (m.type === "brake") {
+      el("path", { d: `M${x - 8} ${y - 6}L${x + 8} ${y - 6}L${x} ${y + 8}Z`, fill: "var(--mid)", stroke: "var(--panel)", "stroke-width": 1.5 }, mg);
+    } else if (m.type === "hazard") {
+      el("path", { d: `M${x} ${y - 9}L${x + 9} ${y}L${x} ${y + 9}L${x - 9} ${y}Z`, fill: "#eab308", stroke: "var(--panel)", "stroke-width": 1.5 }, mg);
+    } else if (m.type === "collision_risk") {
+      el("circle", { cx: x, cy: y, r: 10, fill: "var(--panel)", stroke: "var(--bad)", "stroke-width": 2, "stroke-dasharray": "3 2.5" }, mg);
+      el("text", { x, y, "text-anchor": "middle", "dominant-baseline": "central", "font-size": 12, "font-weight": 600, fill: "var(--bad)" }, mg).textContent = "!";
+    }
+  });
+}
+
+function drawEmergency(list) {
+  const g = layers.amb; g.innerHTML = "";
+  list.forEach(e => {
+    const [x, y] = placeOnRing(e);
+    el("circle", { cx: x, cy: y, r: 9, fill: "var(--amb)", class: "pulse" }, g);
+    const body = el("g", {}, g);
+    el("title", {}, body).textContent = `${e.vehicle_class || "emergencia"} ${e.source_id} · ${e.segment_id} · ETA ${e.eta_s ?? "?"} s · ruta ${(e.route || []).join("-")}`;
+    el("circle", { cx: x, cy: y, r: 10, fill: "var(--amb)", stroke: "var(--panel)", "stroke-width": 2 }, body);
+    el("path", { d: `M${x - 4.5} ${y}H${x + 4.5}M${x} ${y - 4.5}V${y + 4.5}`, stroke: "#fff", "stroke-width": 2.2, "stroke-linecap": "round" }, body);
+    const [lx, ly] = pt(R_IN - 30, angleOfXY(x - CX, CY - y));
+    el("text", { x: lx, y: ly, "text-anchor": "middle", "dominant-baseline": "central", "font-size": 11.5,
+      "font-weight": 600, fill: "var(--amb)" }, g).textContent = `ETA ${e.eta_s != null ? Math.round(e.eta_s) + " s" : "?"}`;
+  });
+}
+
+function drawSegments(segments, rsus) {
+  segments.forEach(s => {
+    const p = document.getElementById(`seg-${segIndex(s.segment_id)}`);
+    p.setAttribute("fill", speedColor(s.mean_speed_mps));
+    p.setAttribute("fill-opacity", s.vehicle_count == null ? .55 : s.age_s > 30 ? .3 : .6);
+    p.querySelector("title").textContent = s.vehicle_count == null ? `${s.segment_id} · sin datos` :
+      `${s.segment_id} · ${s.vehicle_count} vehículos · ${s.mean_speed_mps != null ? Math.round(s.mean_speed_mps * 3.6) + " km/h" : "–"} · hace ${ago(s.age_s)}`;
+  });
+  [["z1", "rsu-1"], ["z2", "rsu-2"]].forEach(([k, rsu]) => {
+    const z = segments.filter(s => s.rsu_id === rsu && s.vehicle_count != null && s.age_s <= 30);
+        const sp = z.filter(s => s.mean_speed_mps != null && s.vehicle_count > 0);
+    const v = sp.length ? sp.reduce((a, s) => a + s.mean_speed_mps, 0) / sp.length : null;
+    const busy = z.filter(s => s.vehicle_count > 0).length;
+    document.getElementById(`zone-${k}-count`).textContent = v != null ? `${Math.round(v * 3.6)} km/h` : "–";
+    document.getElementById(`zone-${k}-sub`).textContent = z.length ? `velocidad media · ${busy} de 6 segmentos con tráfico` : "sin datos recientes";
+  });
+  ["rsu-1", "rsu-2"].forEach(id => {
+    const r = rsus[id], node = document.getElementById(`node-${id}`), age = r ? r.last_event_age_s : null;
+    node.querySelector(".rsu-dot").setAttribute("fill", age == null ? "var(--neutral)" : age <= 15 ? "var(--ok)" : age <= 60 ? "var(--warn)" : "var(--bad)");
+    node.querySelector("title").textContent = r ? `${id}: ${fmt(r.events)} eventos · último hace ${ago(age)}` : `${id}: sin eventos todavía`;
+  });
+}
+
+function drawTable(segments) {
+  document.getElementById("segtable").innerHTML = segments.map(s => {
+    const has = s.vehicle_count != null, kmh = has && s.mean_speed_mps != null ? Math.round(s.mean_speed_mps * 3.6) : null;
+    const occ = has && s.occupancy != null ? Math.round(s.occupancy * 100) : null;
+    return `<tr><td class="mono">${s.segment_id}</td><td><span class="badge ${s.rsu_id === "rsu-1" ? "z1" : "z2"}">${s.rsu_id}</span></td>
+      <td>${has ? s.vehicle_count : "–"}</td>
+      <td>${kmh != null ? `<span class="spd" style="background:${speedColor(s.mean_speed_mps)}"></span>${kmh} km/h` : "–"}</td>
+      <td>${occ != null ? `<div class="occ" title="${occ} %"><div style="width:${Math.min(100, occ * 4)}%"></div></div>` : "–"}</td>
+      <td class="mono">${has ? ago(s.age_s) : "–"}</td></tr>`;
+  }).join("");
+}
+
+function drawChart(values, bucketS) {
+  const c = document.getElementById("chart"); c.innerHTML = "";
+  const W = 400, H = 170, pad = 22, max = Math.max(5, ...values), bw = W / values.length;
+  [0, .5, 1].forEach(f => {
+    const y = H - pad - f * (H - pad - 8);
+    el("line", { x1: 0, y1: y, x2: W, y2: y, stroke: "var(--line)", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, c);
+  });
+  values.forEach((v, i) => {
+    const h = (H - pad - 8) * v / max, last = i === values.length - 1;
+    el("rect", { x: i * bw + .6, y: H - pad - h, width: Math.max(1, bw - 1.2), height: h, rx: 1.5,
+      fill: last ? "var(--z1)" : "var(--z2)", opacity: last ? .9 : .55 }, c);
+  });
+  el("text", { x: 2, y: 12, "font-size": 11, fill: "var(--ink-3)" }, c).textContent = `máx. ${max} eventos / ${bucketS} s`;
+  el("text", { x: 2, y: H - 6, "font-size": 11, fill: "var(--ink-3)" }, c).textContent = "−5 min";
+  el("text", { x: W - 2, y: H - 6, "font-size": 11, fill: "var(--ink-3)", "text-anchor": "end" }, c).textContent = "ahora";
+  const last = values.slice(-6), rate = last.reduce((a, b) => a + b, 0) / (last.length * bucketS);
+  document.getElementById("k-rate").textContent = `${rate.toFixed(1).replace(".", ",")} eventos/s`;
+}
+
+function drawLog(recent) {
+  document.getElementById("log").innerHTML = recent.length ? recent.map(e =>
+    `<div><span class="t">${esc((e.time || "").slice(11, 19))}</span><span class="src">${esc(e.source)} · ${esc(e.segment)}</span><span>${esc(EVENT_ES[e.type] || e.type)}</span></div>`
+  ).join("") : `<div class="empty" style="display:block">Sin eventos todavía</div>`;
+}
+
+function drawAlerts(list) {
+  const box = document.getElementById("alerts");
+  document.getElementById("alerts-count").textContent = `${list.length} más recientes`;
+  if (!list.length) { box.innerHTML = `<div class="empty">Sin alertas todavía</div>`; return; }
+  const now = Date.now();
+  box.innerHTML = list.slice(0, 60).map(a => {
+    const age = Math.max(0, (now - Date.parse(a.created_time)) / 1000);
+    const zb = a.zona === "rsu-1" ? "z1" : a.zona === "rsu-2" ? "z2" : a.zona === "broadcast" ? "zb" : "";
+    const zlabel = a.zona === "broadcast" ? "las dos RSU" : (a.zona || "sin zona");
+    const sns = a.published === undefined ? "" : a.published ? `<span class="badge">SNS enviada</span>` : `<span class="badge pending">SNS pendiente</span>`;
+    const seg = a.location ? a.location.segment_id : "";
+    return `<div class="alert s${a.severity || 0}"><div class="bar"></div><div class="body">
+      <div class="top"><span class="type">${esc(TYPE_ES[a.alert_type] || a.alert_type)}</span>
+      <span class="badge ${zb}">${esc(zlabel)}</span>${sns}</div>
+      <div class="msg">${esc(a.message)}</div>
+      <div class="meta mono">${esc(seg)} · severidad ${esc(a.severity ?? "–")} · hace ${ago(age)}</div></div></div>`;
+  }).join("");
+}
+
+function setPill(id, state, text) {
+  document.getElementById(`p-${id}`).className = `dot ${state}`;
+  document.getElementById(`t-${id}`).textContent = text;
+}
+
+async function getJSON(url) { const r = await fetch(url, { cache: "no-store" }); if (!r.ok) throw new Error(r.status); return r.json(); }
+
+async function tickLive() {
+  try {
+    const d = await getJSON("live");
+    drawSegments(d.segments, d.rsus); drawCars(d.segments); drawMarkers(d.markers); drawEmergency(d.emergency);
+    drawTable(d.segments); drawChart(d.throughput, d.bucket_s); drawLog(d.recent);
+    document.getElementById("t-clock").textContent = new Date().toLocaleTimeString("es-ES");
+  } catch (e) { document.getElementById("t-clock").textContent = "sin conexión"; }
+}
+
+async function tickReport() {
+  try {
+    const r = await getJSON("report");
+    ["received", "stored", "duplicate", "invalid", "alerts"].forEach(k => document.getElementById(`k-${k}`).textContent = fmt(r[k]));
+    document.getElementById("k-published").textContent = fmt(r.alerts_published);
+    document.getElementById("k-puberr").textContent = `${fmt(r.publish_errors)} errores`;
+    document.getElementById("k-invalid").classList.toggle("bad", r.invalid > 0);
+    document.getElementById("k-queue").textContent = fmt(r.queue_depth);
+    setPill("queue", r.queue_depth > 100 ? "warn" : "ok", `Cola SQS · ${fmt(r.queue_depth)}`);
+  } catch (e) { setPill("queue", "bad", "Cola SQS · sin datos"); }
+  try {
+    const h = await fetch("health", { cache: "no-store" }).then(x => x.json());
+    setPill("consumer", h.ok ? "ok" : "bad", h.ok ? "Consumidor activo" : "Consumidor detenido");
+    setPill("sns", h.sns ? "ok" : "warn", h.sns ? "SNS activo" : "SNS sin configurar");
+  } catch (e) { setPill("consumer", "bad", "Servicio sin respuesta"); }
+}
+
+async function tickAlerts() { try { drawAlerts(await getJSON("alerts")); } catch (e) {} }
+
+buildRing();
+tickLive(); tickReport(); tickAlerts();
+setInterval(tickLive, 1000); setInterval(tickReport, 2000); setInterval(tickAlerts, 2000);
 </script>
-</body></html>
+</body>
+</html>
