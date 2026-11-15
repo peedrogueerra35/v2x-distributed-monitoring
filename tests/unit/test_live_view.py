@@ -76,3 +76,20 @@ def test_snapshot_is_json_serializable():
     v = live.LiveView(Clock())
     v.update(ev("hazard", {"hazard_type": "oil", "severity": 2, "confidence": Decimal("0.8")}, seg="S07", rsu="rsu-2"))
     json.dumps(v.snapshot())
+
+
+def test_each_vehicle_appears_once_with_its_latest_position():
+    clock = Clock()
+    v = live.LiveView(clock)
+    older = {"id": "veh-0001", "s_m": Decimal("295.0"), "lane": 0, "speed_mps": Decimal("29"), "time": "2026-11-15T10:00:03.000Z"}
+    newer = {"id": "veh-0001", "s_m": Decimal("324.5"), "lane": 0, "speed_mps": Decimal("29"), "time": "2026-11-15T10:00:04.000Z"}
+    other = {"id": "veh-0002", "s_m": Decimal("410.0"), "lane": 1, "speed_mps": Decimal("27"), "time": "2026-11-15T10:00:04.000Z"}
+    base = {"mean_speed_mps": Decimal("29"), "window_s": 5}
+    # veh-0001 crossed S02 -> S03 inside the window, so both summaries include it
+    v.update(ev("density", dict(base, vehicle_count=2, vehicles=[newer, other]), seg="S03", source="rsu-1"))
+    v.update(ev("density", dict(base, vehicle_count=1, vehicles=[older]), seg="S02", source="rsu-1"))
+    vehicles = v.snapshot()["vehicles"]
+    assert [x["id"] for x in vehicles] == ["veh-0001", "veh-0002"]
+    assert vehicles[0]["s_m"] == 324.5 and vehicles[0]["segment_id"] == "S03"
+    clock.t += live.VEHICLE_TTL_S + 1
+    assert v.snapshot()["vehicles"] == []

@@ -196,3 +196,25 @@ def test_cloud_alert_must_match_main_alert_schema(edge):
     incomplete={'alert_id':'bad','zona':'broadcast'}
     assert edge.receive_sns_alert(incomplete,now=t)=='invalid'
     assert edge.metrics()['mqtt_alerts_pending']==0
+
+
+def test_density_lists_each_vehicle_once_with_its_latest_position(tmp_path):
+    """The cloud dashboard draws one dot per vehicle from this list."""
+    root = Path(__file__).resolve().parents[2]
+    store = EdgeStore(tmp_path / "e.sqlite", "rsu-1", root / "schema/v2x-event.schema.json")
+    t0 = 1_800_000_000.0
+    def pos(seq, s_m, t):
+        return {"event_id": f"p{seq}", "source_id": "veh-0001", "source_type": "vehicle", "seq": seq,
+                "event_type": "position", "event_time": iso(t),
+                "location": {"segment_id": "S01", "rsu_id": "rsu-1", "lane": 0, "x": 1.0, "y": 1.0},
+                "payload": {"speed_mps": 20.0, "accel_mps2": 0.0, "heading_deg": 90.0, "s_m": s_m}, "schema_version": "1.1"}
+    try:
+        store.process("v2x/rsu-1/S01/veh-0001/position", pos(0, 110.0, t0 + 0.5), now=t0 + 0.6)
+        store.process("v2x/rsu-1/S01/veh-0001/position", pos(1, 130.0, t0 + 1.5), now=t0 + 1.6)
+        store.emit_due_windows(now=t0 + 60)
+        body = json.loads(store.next_outbox(now=t0 + 60)["body"])
+        assert body["event_type"] == "density"
+        assert body["payload"]["vehicle_count"] == 1
+        assert [(v["id"], v["s_m"]) for v in body["payload"]["vehicles"]] == [("veh-0001", 130.0)]
+    finally:
+        store.close()
