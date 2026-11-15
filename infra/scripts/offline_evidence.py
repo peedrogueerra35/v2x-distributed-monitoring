@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible offline A-main + B-edge pipeline, no Docker/AWS required.
+"""Reproducible offline simulator + RSU edge pipeline, no Docker/AWS required.
 
 Use from repo root: python infra/scripts/offline_evidence.py
 Evidence counts are events selected into local SQLite outboxes, not delivered to AWS.

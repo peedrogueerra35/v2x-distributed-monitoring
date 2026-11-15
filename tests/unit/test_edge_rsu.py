@@ -1,4 +1,4 @@
-"""Persona B: deterministic unit tests, no real AWS/MQTT brokers required."""
+"""RSU edge processing: deterministic unit tests, no real AWS or MQTT brokers required."""
 import copy
 import json
 from pathlib import Path

@@ -52,3 +52,5 @@ services/rsu/.env
 *.sqlite3-shm
 experiments/results/
 /docs/
+results/
+*.zip

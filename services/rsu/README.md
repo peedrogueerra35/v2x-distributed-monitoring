@@ -1,76 +1,66 @@
-# RSU D2 - Persona B (compatible con main PR #15)
+# RSU (roadside unit)
 
-En este repositorio existen **dos** archivos Compose:
+Each RSU runs two containers: Mosquitto, the MQTT broker of its zone, and the RSU application (FastAPI on port
+8090), which connects to the broker as user `rsu`. In AWS each RSU has its own EC2 instance and is deployed by
+`infra/deploy/deploy.sh` with `infra/deploy/compose.rsu.yml`; locally, `services/rsu/compose.yml` starts two RSUs
+on one machine.
 
-- **Local**: `services/rsu/compose.yml`; dos proyectos (`v2x-rsu1`, `v2x-rsu2`), puertos 1883/8090 y 1884/8091.
-- **AWS**: `infra/deploy/compose.rsu.yml`; un proyecto `v2x` por EC2, puertos 1883/8090, imagen `${RSU_IMAGE}` desde ECR. Lo lanza `infra/deploy/deploy.sh` de Persona A.
+## What it does
 
-Para ambos casos los usuarios MQTT **son `sim` y `rsu`**, no `vehicle` ni `rsu-app`. `MQTT_VEHICLE_PASSWORD` y `MQTT_APP_PASSWORD` son secretos, jamás versionarlos.
+- Subscribes to `v2x/<rsu>/+/+/+` with QoS 1 and acknowledges each message only after committing it to SQLite.
+- Validates every event against `schema/v2x-event.schema.json` and the MQTT topic, checks the zone and discards
+  repeated `event_id`s.
+- Aggregates positions in 5 s event-time tumbling windows per segment, with 2 s of allowed lateness, and emits
+  one `density` event per window (vehicle count, mean speed, occupancy and the latest position of each vehicle).
+- Forwards critical events (`brake`, `crash`, `hazard`, `emergency`) at once, with higher priority than `density`.
+- Raises local `collision_risk` alerts when two vehicles in the same lane have a time to collision below 2 s and a
+  gap below 60 m, with a 15 s cool-down per pair, and records the risk as an event for the cloud.
+- Sends everything to SQS through a durable SQLite outbox (WAL), deleting each message only after SQS accepts it
+  and retrying with exponential back-off.
+- Receives cloud alerts from SNS on `POST /sns`: verifies the AWS signature (topic, timestamp, regional
+  certificate URL, RSA signature), validates `schema/v2x-alert.schema.json`, checks the zone, discards repeated
+  `alert_id`s and publishes the alert over MQTT.
 
-## 1. Pruebas unitarias sin AWS
+MQTT users are `sim` (vehicles) and `rsu` (application); the ACL restricts each one to its zone's topics.
+
+## Endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | `ok`, MQTT connection, cloud pause flag and pending outbox (503 if MQTT is down) |
+| `GET /metrics`, `GET /audit` | Counters and outbox audit; require header `X-Metrics-Token` (403 if the token is missing or wrong) |
+| `POST /sns` | SNS subscription confirmation and alert notifications |
+
+## Two local RSUs with Docker
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
 pip install pytest jsonschema -r simulator/requirements.txt -r services/rsu/requirements.txt
-pytest -q
-python infra/scripts/offline_evidence.py
-```
-
-## 2. Dos RSU locales con Docker
-
-```bash
-cp services/rsu/.env.example services/rsu/.env
-# Editar contraseñas y METRICS_TOKEN; no mantener CHANGE_ME_
+cp services/rsu/.env.example services/rsu/.env     # set the passwords and METRICS_TOKEN
 ./infra/scripts/local_rsus.sh up
 curl -i http://127.0.0.1:8090/health
 curl -i http://127.0.0.1:8091/health
 set -a; source services/rsu/.env; set +a
-python infra/scripts/smoke_edge.py
+python infra/scripts/smoke_edge.py                 # triggers one collision_risk alert on each RSU
 ```
 
-**PASS:** ambas respuestas `/health` son HTTP 200 y `smoke_edge.py` recibe una alerta local `collision_risk` de cada RSU. Sin credenciales AWS, la salida SQLite puede acumular eventos: el estado saludable solo comprueba Mosquitto, no SQS.
+Both `/health` calls must return HTTP 200 and `smoke_edge.py` must receive one local alert from each RSU.
+Without AWS credentials the outbox keeps the events, since `/health` checks MQTT, not SQS.
 
-## 3. Simulación MQTT completa
+A full local run, in real time:
 
 ```bash
-python -m simulator --transport mqtt --duration 120 \
-  --mqtt-rsu-1-host 127.0.0.1 --mqtt-rsu-1-port 1883 \
-  --mqtt-rsu-2-host 127.0.0.1 --mqtt-rsu-2-port 1884 \
-  --scenario simulator/scenarios/accident.yaml
+python -m simulator --transport mqtt --duration 120 --scenario simulator/scenarios/accident.yaml \
+  --mqtt-rsu-1-host 127.0.0.1 --mqtt-rsu-1-port 1883 --mqtt-rsu-2-host 127.0.0.1 --mqtt-rsu-2-port 1884
+python infra/scripts/edge_metrics.py runs/<run_id> --rsu1 http://127.0.0.1:8090 --rsu2 http://127.0.0.1:8091 --token "$METRICS_TOKEN"
 ```
 
-Se generan `runs/<id>/vehicle_alerts.jsonl`, `summary.json`, `groundtruth.jsonl`, etc. Ejecutar en **tiempo real**: `--fast` es solo para simulaciones offline, no para usar conjuntamente con MQTT y las ventanas por tiempo real.
-
-## 4. Métricas y E1
+Experiment E1 also works locally (`--mode local`), pausing the SQS sender of a local RSU container:
 
 ```bash
-curl -sS -H "X-Metrics-Token: $METRICS_TOKEN" http://127.0.0.1:8090/metrics
-python infra/scripts/edge_metrics.py runs/<run_id> \
-  --rsu1 http://127.0.0.1:8090 --rsu2 http://127.0.0.1:8091 --token "$METRICS_TOKEN"
-# Con simulador MQTT activo, iniciar en otra terminal:
 python experiments/experiment_e1.py --mode local --container v2x-rsu1-rsu-1 \
-  --rsu-url http://127.0.0.1:8090 --token "$METRICS_TOKEN" \
-  --repetitions 5 --outage-s 20
+  --rsu-url http://127.0.0.1:8090 --token "$METRICS_TOKEN" --repetitions 5 --outage-s 20
 ```
 
-E1 suspende **el emisor SQS de la aplicación**, no corta físicamente la red. Para SSM sobre EC2 usar `--mode ssm --instance-id i-... --rsu-url http://IP:8090`. En EC2 el proyecto Compose es `v2x` y el servicio `rsu`.
+E1 pauses the application's SQS sender (file `/data/cloud.paused`); it does not cut the network.
 
-Para bajar el entorno local:
-
-```bash
-./infra/scripts/local_rsus.sh down
-```
-
-## 5. Detalles técnicos
-
-- Suscripción MQTT persistente QoS1; validación de esquema y tema MQTT, deduplicación `event_id`, ACK solo después del commit de SQLite.
-- Ventanas *tumbling* event-time de 5 s por segmento, 2 s de tolerancia; `vehicle_count`, `mean_speed_mps`, `sample_count`, ocupación aproximada. Las posiciones no se reenvían individualmente a SQS.
-- Alertas locales TTC menor que 2 s entre vehículos del mismo carril; enfriamiento de 15 s. Es riesgo de seguimiento, **no** detección general de intersecciones perpendiculares.
-- Eventos críticos se encolan de inmediato con prioridad mayor que `density`.
-- Buffer SQLite WAL con backoff exponencial a SQS y borrado solo tras `SendMessage` satisfactorio. Con reintentos puede haber duplicados, deduplicados por el cloud mediante `event_id`.
-- SNS firmado: URL regional restringida, comprobación de firma con certificado X.509, validación del esquema `v2x-alert.schema.json`, deduplicación de `alert_id` y publicación MQTT.
-- `/metrics` y `/audit` requieren token; si `METRICS_TOKEN` no está configurado, ambos responden 403.
-
-Para el detalle completo: `docs/INFORME_D2_PERSONA_B_ACTUALIZADO.md` y `docs/CONTRATO_PERSONAS_A_B_D2.md`.
+Stop the local environment with `./infra/scripts/local_rsus.sh down`.

@@ -1,4 +1,4 @@
-"""Executable contracts against Person A's unchanged JSON Schemas and deploy files."""
+"""Executable contracts between the RSU, the shared JSON Schemas and the deployment files."""
 import json
 from pathlib import Path
 
